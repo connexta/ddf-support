@@ -13,6 +13,7 @@
  */
 package org.codice.bundle.auto.version;
 
+import com.google.common.base.Strings;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileReader;
@@ -60,6 +61,8 @@ public class BundleAutoVersionPlugin extends AbstractMojo {
           + " **/\n"
           + " -->";
 
+  private static final String PACKAGE_IMPORT_DELIMETER = "\",";
+
   private static final String IMPORT_PACKAGE_PROP = "Import-Package";
   private static final String MAVEN_BUNDLE_PLUGIN_ARTIFACT_ID = "maven-bundle-plugin";
   private static final String MAVEN_CONFIG_INSTRUCTIONS = "instructions";
@@ -69,27 +72,13 @@ public class BundleAutoVersionPlugin extends AbstractMojo {
 
   @Override
   public void execute() {
-    Path manifestFilePath =
-        Paths.get(mavenProject.getBuild().getOutputDirectory() + "/META-INF/MANIFEST.MF");
+    String packageImports = getManifestPackageImports(mavenProject);
 
-    if (!manifestFilePath.toFile().exists()) {
+    if (Strings.isNullOrEmpty(packageImports)) {
       getLog().warn("No 'MANIFEST.MF' was found in build output, skipping");
+
       return;
     }
-
-    Manifest manifest = null;
-
-    try (FileInputStream manifestInputStream = new FileInputStream(manifestFilePath.toString())) {
-      manifest = new Manifest(manifestInputStream);
-    } catch (IOException e) {
-      getLog().error("Error reading 'MANIFEST.MF' for the project", e);
-    }
-
-    if (manifest == null) throw new RuntimeException("Unable to locate generated 'MANIFEST.MF'");
-
-    String packageImports =
-        Arrays.stream(manifest.getMainAttributes().getValue(IMPORT_PACKAGE_PROP).split("\","))
-            .collect(Collectors.joining("\",\n"));
 
     Model model =
         Optional.ofNullable(readProjectModel(mavenProject))
@@ -111,9 +100,29 @@ public class BundleAutoVersionPlugin extends AbstractMojo {
     if (configInstructions == null)
       throw new RuntimeException("Unable to locate configuration for " + mavenBundlePlugin);
 
+    if (haveSamePackageImports(
+        packageImports, configInstructions.getChild(IMPORT_PACKAGE_PROP).getValue())) {
+      getLog().info("Package imports between pom.xml and MANIFEST.MF match, skipping");
+      return;
+    }
+
     configInstructions.getChild(IMPORT_PACKAGE_PROP).setValue(packageImports);
 
     saveProjectModel(mavenProject, model);
+  }
+
+  private boolean haveSamePackageImports(String manifestPackageImports, String pomPackageImports) {
+    List<String> manifestEntries = toList(manifestPackageImports);
+    List<String> pomEntries = toList(pomPackageImports);
+
+    return pomEntries.equals(manifestEntries);
+  }
+
+  private List<String> toList(String packageImport) {
+    return Arrays.stream(packageImport.split(PACKAGE_IMPORT_DELIMETER))
+        .sorted()
+        .map(String::trim)
+        .collect(Collectors.toList());
   }
 
   private void saveProjectModel(MavenProject project, Model model) {
@@ -150,6 +159,31 @@ public class BundleAutoVersionPlugin extends AbstractMojo {
 
   private Path getProjectPomPath(MavenProject project) {
     return Paths.get(project.getBasedir() + "/pom.xml");
+  }
+
+  private String getManifestPackageImports(MavenProject project) {
+    Path manifestFilePath =
+        Paths.get(project.getBuild().getOutputDirectory() + "/META-INF/MANIFEST.MF");
+
+    if (!manifestFilePath.toFile().exists()) return "";
+
+    Manifest manifest = null;
+
+    try (FileInputStream manifestInputStream = new FileInputStream(manifestFilePath.toString())) {
+      manifest = new Manifest(manifestInputStream);
+    } catch (IOException e) {
+      getLog().error("Error reading 'MANIFEST.MF' for the project", e);
+    }
+
+    if (manifest == null) throw new RuntimeException("Unable to locate generated 'MANIFEST.MF'");
+
+    return Arrays.stream(
+            manifest
+                .getMainAttributes()
+                .getValue(IMPORT_PACKAGE_PROP)
+                .split(PACKAGE_IMPORT_DELIMETER))
+        .sorted()
+        .collect(Collectors.joining("\",\n"));
   }
 
   private Plugin getMavenBundlePlugin(List<Plugin> buildPlugins) {
